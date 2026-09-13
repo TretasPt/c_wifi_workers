@@ -13,26 +13,23 @@
 // Function to use for prints
 #define DEBUG_printf printf
 
-// default value
-#define MODE_OFF 0
-// Intermediary mode between OFF and AP modes.
-#define MODE_OFF_AP_INT 1
-// First mode. Acts as a server on it's own Access Point wifi network.
-#define MODE_AP 2
-// Intermediary mode between AP and LAN modes.
-// Acts as a server on it's own Access Point wifi network.
-// Attempts to connect to a wifi network. If successfull advances to MODE_LAN, else moves to MODE_AP.
-#define MODE_AP_MIXED_INT 3
-#define MODE_MIXED 4
-#define MODE_MIXED_LAN_INT 5
-// Second mode. Acts as a server connected to a wifi network.
-#define MODE_LAN 6
-// Intermediary mode between LAN and AN modes.
-// Acts as a server on it's own Access Point wifi network.
-// Attempts to connect to a wifi network. If successfull advances to MODE_LAN, else moves to MODE_AP.
-#define MODE_LAN_WAN_INT 7
-// Third mode. Acts as a server connected to a wifi network with port forwarding set to it.
-#define MODE_WAN 8
+
+// --- LEVEL 0: SHUTDOWN / INITIALIZATION ---
+#define MODE_OFF              0  // Goal: System stopped / safe state.
+#define MODE_OFF_AP_INT       1  // Intermediary: Initializing cyw43, turning on AP hardware.
+
+// --- LEVEL 1: CAPTIVE PORTAL ---
+#define MODE_AP               2  // Goal: Stable Captive Portal. Handing out IPs via DHCP, DNS redirecting.
+
+// --- LEVEL 2: JOINING HOME NETWORK ---
+#define MODE_AP_LAN_INT       3  // Intermediary: Scanning and attempting async connection to home router.
+#define MODE_LAN_VERIFY       4  // Goal: Dual-Mode active (STA + AP). Waiting for user to ping STA IP to verify access.
+#define MODE_LAN_CLEANUP_INT  5  // Intermediary: User verified! Shutting down DNS server and disabling AP radio.
+#define MODE_LAN              6  // Goal: Pure local IoT device. Running HTTP server strictly on home WiFi.
+
+// --- LEVEL 3: OPENING TO THE INTERNET ---
+#define MODE_LAN_WAN_INT      7  // Intermediary: Sending UPnP discovery and SOAP port-forwarding requests.
+#define MODE_WAN              8  // Goal: Exposed to web. UPnP active with keep-alive heartbeats running.
 
 int64_t alarm_callback(alarm_id_t id, void *user_data)
 {
@@ -74,7 +71,8 @@ void key_pressed_func(void *_)
 {
     int key = getchar_timeout_us(0);
     DEBUG_printf(">%c\n", key);
-    if (key - '0' >= MODE_OFF && key - '0' <= (char)MODE_WAN)
+    // if (key - '0' >= MODE_OFF && key - '0' <= (char)MODE_WAN)
+    if (key >= MODE_OFF + '0' && key <= (char)MODE_WAN + '0')
     {
         setMode(key - '0');
     }
@@ -99,7 +97,9 @@ void check_and_update_mode()
 
         const char *ap_name = "picow_test";
         const char *password = "password";
+        cyw43_arch_lwip_begin();
         cyw43_arch_enable_ap_mode(ap_name, password, CYW43_AUTH_WPA2_AES_PSK);
+        cyw43_arch_lwip_end();
 
         // Start the dhcp server
         ip4_addr_t mask;
@@ -117,17 +117,17 @@ void check_and_update_mode()
         //Check DNS
         //Check HTTP
 
-        // conState.mode = MODE_AP;
-        // return;
+        conState.mode = MODE_AP;
+        return;
     }
-    else if (conState.mode == MODE_AP && conState.goal_mode > MODE_AP)//MODE_AP -> MODE_AP_MIXED_INT
+    else if (conState.mode == MODE_AP && conState.goal_mode > MODE_AP)//MODE_AP -> MODE_AP_LAN_INT
     {
         //Does nothing
 
         // conState.mode = MODE_AP_MIXED_INT;
         // return;
     }
-    else if (conState.mode == MODE_AP_MIXED_INT && conState.goal_mode > MODE_AP_MIXED_INT)//MODE_AP_MIXED_INT -> MODE_MIXED
+    else if (conState.mode == MODE_AP_LAN_INT && conState.goal_mode > MODE_AP_LAN_INT)//MODE_AP_LAN_INT -> MODE_LAN_VERIFY
     {
         //Turn on AP_mode
         //Turn on DHCP
@@ -141,10 +141,10 @@ void check_and_update_mode()
         // conState.mode = MODE_AP_MIXED_INT;
         // return;
     }
-    else if (conState.mode == MODE_MIXED && conState.goal_mode > MODE_MIXED)//MODE_MIXED -> MODE_MIXED_LAN_INT
+    else if (conState.mode == MODE_LAN_VERIFY && conState.goal_mode > MODE_LAN_VERIFY)//MODE_LAN_VERIFY -> MODE_LAN_CLEANUP_INT
     {
     }
-    else if (conState.mode == MODE_MIXED_LAN_INT && conState.goal_mode > MODE_MIXED_LAN_INT)//MODE_MIXED_LAN_INT -> MODE_LAN
+    else if (conState.mode == MODE_LAN_CLEANUP_INT && conState.goal_mode > MODE_LAN_CLEANUP_INT)//MODE_LAN_CLEANUP_INT -> MODE_LAN
     {
     }
     else if (conState.mode == MODE_LAN && conState.goal_mode > MODE_LAN)//MODE_LAN -> MODE_LAN_WAN_INT
@@ -159,16 +159,16 @@ void check_and_update_mode()
     else if (conState.mode == MODE_LAN_WAN_INT && conState.goal_mode < MODE_LAN_WAN_INT)//MODE_LAN_WAN_INT -> MODE_LAN
     {
     }
-    else if (conState.mode == MODE_LAN && conState.goal_mode < MODE_LAN)//MODE_LAN -> MODE_MIXED_LAN_INT
+    else if (conState.mode == MODE_LAN && conState.goal_mode < MODE_LAN)//MODE_LAN -> MODE_LAN_CLEANUP_INT
     {
     }
-    else if (conState.mode == MODE_MIXED_LAN_INT && conState.goal_mode < MODE_MIXED_LAN_INT)//MODE_MIXED_LAN_INT -> MODE_MIXED
+    else if (conState.mode == MODE_LAN_CLEANUP_INT && conState.goal_mode < MODE_LAN_CLEANUP_INT)//MODE_LAN_CLEANUP_INT -> MODE_LAN_VERIFY
     {
     }
-    else if (conState.mode == MODE_MIXED && conState.goal_mode < MODE_MIXED)//MODE_MIXED -> MODE_AP_MIXED_INT
+    else if (conState.mode == MODE_LAN_VERIFY && conState.goal_mode < MODE_LAN_VERIFY)//MODE_LAN_VERIFY -> MODE_AP_LAN_INT
     {
     }
-    else if (conState.mode == MODE_AP_MIXED_INT && conState.goal_mode < MODE_AP_MIXED_INT)//MODE_AP_MIXED_INT -> MODE_AP
+    else if (conState.mode == MODE_AP_LAN_INT && conState.goal_mode < MODE_AP_LAN_INT)//MODE_AP_LAN_INT -> MODE_AP
     {
     }
     else if (conState.mode == MODE_AP && conState.goal_mode < MODE_AP)//MODE_AP -> MODE_OFF_AP_INT
