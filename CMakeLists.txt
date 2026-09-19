@@ -39,6 +39,7 @@ add_executable(c_wifi_workers
         c_wifi_workers.c
         dhcpserver/dhcpserver.c
         dnsserver/dnsserver.c
+        httpserver/httpserver.c
         )
 
 pico_set_program_name(c_wifi_workers "c_wifi_workers")
@@ -58,6 +59,7 @@ target_include_directories(c_wifi_workers PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}/.. # for our common lwipopts
         ${CMAKE_CURRENT_LIST_DIR}/dhcpserver
         ${CMAKE_CURRENT_LIST_DIR}/dnsserver
+        ${CMAKE_CURRENT_LIST_DIR}/httpserver
         )
 
 # Add any user requested libraries

@@ -5,52 +5,43 @@
 // #include "lwip/pbuf.h"
 // #include "lwip/tcp.h"
 #include "dhcpserver.h"
-// #include "dnsserver.h"
-
-#define HEARTHBEAT_INTERVAL_MS 2000
-#define LED_BLINK_DURATION_MS 100
-#define LED_GPIO 0
-// Function to use for prints
-#define DEBUG_printf printf
-
-
-// --- LEVEL 0: SHUTDOWN / INITIALIZATION ---
-#define MODE_OFF              0  // Goal: System stopped / safe state.
-#define MODE_OFF_AP_INT       1  // Intermediary: Initializing cyw43, turning on AP hardware.
-
-// --- LEVEL 1: CAPTIVE PORTAL ---
-#define MODE_AP               2  // Goal: Stable Captive Portal. Handing out IPs via DHCP, DNS redirecting.
-
-// --- LEVEL 2: JOINING HOME NETWORK ---
-#define MODE_AP_LAN_INT       3  // Intermediary: Scanning and attempting async connection to home router.
-#define MODE_LAN_VERIFY       4  // Goal: Dual-Mode active (STA + AP). Waiting for user to ping STA IP to verify access.
-#define MODE_LAN_CLEANUP_INT  5  // Intermediary: User verified! Shutting down DNS server and disabling AP radio.
-#define MODE_LAN              6  // Goal: Pure local IoT device. Running HTTP server strictly on home WiFi.
-
-// --- LEVEL 3: OPENING TO THE INTERNET ---
-#define MODE_LAN_WAN_INT      7  // Intermediary: Sending UPnP discovery and SOAP port-forwarding requests.
-#define MODE_WAN              8  // Goal: Exposed to web. UPnP active with keep-alive heartbeats running.
+#include "dnsserver.h"
+#include "httpserver.h"
+#include "c_wifi_workers.h"
 
 int64_t alarm_callback(alarm_id_t id, void *user_data)
 {
-    cyw43_gpio_set(&cyw43_state, LED_GPIO, false);
+    cyw43_gpio_set(&cyw43_state, LED_GPIO, *((uint8_t *)user_data));
     return false; // Return false so it doesn't repeat
 }
-void blink_led()
+void blink_led(uint8_t n)
 {
+    if (n < 1)
+    {
+        return;
+    }
+
     cyw43_gpio_set(&cyw43_state, LED_GPIO, true);
-    add_alarm_in_ms(LED_BLINK_DURATION_MS, alarm_callback, NULL, false);
+    for (uint8_t i = 1; i < 2 * n; i++)
+    {
+        uint8_t *next_bool = (uint8_t *)malloc(sizeof(uint8_t));
+        *next_bool = !(i % 2);
+        add_alarm_in_ms((LED_BLINK_DURATION_MS / ((2 * n) - 1))*i, alarm_callback, (void *)next_bool, false);
+    }
 }
 
-struct
-{
-    int mode;
-    int goal_mode;
-} conState = {.mode = MODE_OFF, .goal_mode = MODE_AP};
+constate_t conState = {.mode = MODE_OFF, .goal_mode = MODE_AP};
 dhcp_server_t dhcp_server;
+dns_server_t dns_server;
+http_server_t http_server;
 ip_addr_t ap_addr;
 
-void setMode(int newMode)
+constate_t getMode()
+{
+    return conState;
+}
+
+void setMode(connection_mode_t newMode)
 {
     if (newMode < MODE_OFF || newMode > MODE_WAN)
     {
@@ -64,7 +55,7 @@ void setMode(int newMode)
     }
     conState.goal_mode = newMode;
     printf("Target mode set to %i. Current mode is still %i.\n", conState.goal_mode, conState.mode);
-    blink_led();
+    blink_led(newMode);
 }
 
 void key_pressed_func(void *_)
@@ -88,14 +79,14 @@ void check_and_update_mode()
     }
 
     DEBUG_printf("Target mode %i. Coming from mode %i.\n", conState.goal_mode, conState.mode);
-    if (conState.mode == MODE_OFF && conState.goal_mode > MODE_OFF)//MODE_OFF -> MODE_OFF_AP_INT
+    if (conState.mode == MODE_OFF && conState.goal_mode > MODE_OFF) // MODE_OFF -> MODE_OFF_AP_INT
     {
-        //Turn on AP_mode
-        //Turn on DHCP
-        //Turn on DNS
-        //Turn on HTTP
+        // Turn on AP_mode
+        // Turn on DHCP
+        // Turn on DNS
+        // Turn on HTTP
 
-        const char *ap_name = "picow_test";
+        const char *ap_name = "pico2w_workers";
         const char *password = "password";
         cyw43_arch_lwip_begin();
         cyw43_arch_enable_ap_mode(ap_name, password, CYW43_AUTH_WPA2_AES_PSK);
@@ -106,76 +97,122 @@ void check_and_update_mode()
         (ap_addr).addr = PP_HTONL(CYW43_DEFAULT_IP_AP_ADDRESS);
         (mask).addr = PP_HTONL(CYW43_DEFAULT_IP_MASK);
         dhcp_server_init(&dhcp_server, &ap_addr, &mask);
+        // Start the dns server
+        dns_server_init(&dns_server, &ap_addr);
+
+        // http server
+        http_server.con_state_getter = getMode;
+        http_server.mode_change_cb = setMode;
+        http_server.ap_addr = ap_addr;
+        http_server_init(&http_server);
 
         conState.mode = MODE_OFF_AP_INT;
         return;
     }
-    else if (conState.mode == MODE_OFF_AP_INT && conState.goal_mode > MODE_OFF_AP_INT)//MODE_OFF_AP_INT -> MODE_AP
+    else if (conState.mode == MODE_OFF_AP_INT && conState.goal_mode > MODE_OFF_AP_INT) // MODE_OFF_AP_INT -> MODE_AP
     {
-        //Check AP_mode
-        //Check DHCP
-        //Check DNS
-        //Check HTTP
+        // Check AP_mode
+        // Check DHCP
+        // Check DNS
+        // Check HTTP
+
+        // TODO Check AP_mode
+        // TODO Check DHCP
+        // TODO Check DNS
+        // TODO Check HTTP
 
         conState.mode = MODE_AP;
         return;
     }
-    else if (conState.mode == MODE_AP && conState.goal_mode > MODE_AP)//MODE_AP -> MODE_AP_LAN_INT
+    else if (conState.mode == MODE_AP && conState.goal_mode > MODE_AP) // MODE_AP -> MODE_AP_LAN_INT
     {
-        //Does nothing
+        // Turn on lwip STA_mode
+        // Turn off DHCP
+        // Turn off DNS
+        // Update HTTP server if needed?
 
-        // conState.mode = MODE_AP_MIXED_INT;
-        // return;
+        cyw43_arch_lwip_begin();
+        cyw43_arch_enable_sta_mode();
+        // cyw43_wifi_join
+        cyw43_arch_lwip_end();
+
+        conState.mode = MODE_AP_LAN_INT;
+        return;
     }
-    else if (conState.mode == MODE_AP_LAN_INT && conState.goal_mode > MODE_AP_LAN_INT)//MODE_AP_LAN_INT -> MODE_LAN_VERIFY
+    else if (conState.mode == MODE_AP_LAN_INT && conState.goal_mode > MODE_AP_LAN_INT) // MODE_AP_LAN_INT -> MODE_LAN_VERIFY
     {
-        //Turn on AP_mode
-        //Turn on DHCP
-        //Turn on DNS
-        //Turn on HTTP
-        
+        // Turn on AP_mode
+        // Turn on DHCP
+        // Turn on DNS
+        // Turn on HTTP
+
         dhcp_server_deinit(&dhcp_server);
         cyw43_arch_lwip_begin();
         cyw43_arch_disable_ap_mode();
         cyw43_arch_lwip_end();
-        // conState.mode = MODE_AP_MIXED_INT;
+        conState.mode = MODE_LAN_VERIFY;
+        return;
+    }
+    else if (conState.mode == MODE_LAN_VERIFY && conState.goal_mode > MODE_LAN_VERIFY) // MODE_LAN_VERIFY -> MODE_LAN_CLEANUP_INT
+    {
+        // conState.mode = MODE_LAN_CLEANUP_INT;
         // return;
     }
-    else if (conState.mode == MODE_LAN_VERIFY && conState.goal_mode > MODE_LAN_VERIFY)//MODE_LAN_VERIFY -> MODE_LAN_CLEANUP_INT
+    else if (conState.mode == MODE_LAN_CLEANUP_INT && conState.goal_mode > MODE_LAN_CLEANUP_INT) // MODE_LAN_CLEANUP_INT -> MODE_LAN
     {
+        // conState.mode = MODE_LAN;
+        // return;
     }
-    else if (conState.mode == MODE_LAN_CLEANUP_INT && conState.goal_mode > MODE_LAN_CLEANUP_INT)//MODE_LAN_CLEANUP_INT -> MODE_LAN
+    else if (conState.mode == MODE_LAN && conState.goal_mode > MODE_LAN) // MODE_LAN -> MODE_LAN_WAN_INT
     {
+        // conState.mode = MODE_LAN_WAN_INT;
+        // return;
     }
-    else if (conState.mode == MODE_LAN && conState.goal_mode > MODE_LAN)//MODE_LAN -> MODE_LAN_WAN_INT
+    else if (conState.mode == MODE_LAN_WAN_INT && conState.goal_mode > MODE_LAN_WAN_INT) // MODE_LAN_WAN_INT -> MODE_WAN
     {
+        // conState.mode = MODE_WAN;
+        // return;
     }
-    else if (conState.mode == MODE_LAN_WAN_INT && conState.goal_mode > MODE_LAN_WAN_INT)//MODE_LAN_WAN_INT -> MODE_WAN
+    else if (conState.mode == MODE_WAN && conState.goal_mode < MODE_WAN) // MODE_WAN -> MODE_LAN_WAN_INT
     {
+        // conState.mode = MODE_LAN_WAN_INT;
+        // return;
     }
-    else if (conState.mode == MODE_WAN && conState.goal_mode < MODE_WAN)//MODE_WAN -> MODE_LAN_WAN_INT
+    else if (conState.mode == MODE_LAN_WAN_INT && conState.goal_mode < MODE_LAN_WAN_INT) // MODE_LAN_WAN_INT -> MODE_LAN
     {
+        // conState.mode = MODE_LAN;
+        // return;
     }
-    else if (conState.mode == MODE_LAN_WAN_INT && conState.goal_mode < MODE_LAN_WAN_INT)//MODE_LAN_WAN_INT -> MODE_LAN
+    else if (conState.mode == MODE_LAN && conState.goal_mode < MODE_LAN) // MODE_LAN -> MODE_LAN_CLEANUP_INT
     {
+        // conState.mode = MODE_LAN_CLEANUP_INT;
+        // return;
     }
-    else if (conState.mode == MODE_LAN && conState.goal_mode < MODE_LAN)//MODE_LAN -> MODE_LAN_CLEANUP_INT
+    else if (conState.mode == MODE_LAN_CLEANUP_INT && conState.goal_mode < MODE_LAN_CLEANUP_INT) // MODE_LAN_CLEANUP_INT -> MODE_LAN_VERIFY
     {
+        // conState.mode = MODE_LAN_VERIFY;
+        // return;
     }
-    else if (conState.mode == MODE_LAN_CLEANUP_INT && conState.goal_mode < MODE_LAN_CLEANUP_INT)//MODE_LAN_CLEANUP_INT -> MODE_LAN_VERIFY
+    else if (conState.mode == MODE_LAN_VERIFY && conState.goal_mode < MODE_LAN_VERIFY) // MODE_LAN_VERIFY -> MODE_AP_LAN_INT
     {
+        conState.mode = MODE_AP_LAN_INT;
+        return;
     }
-    else if (conState.mode == MODE_LAN_VERIFY && conState.goal_mode < MODE_LAN_VERIFY)//MODE_LAN_VERIFY -> MODE_AP_LAN_INT
+    else if (conState.mode == MODE_AP_LAN_INT && conState.goal_mode < MODE_AP_LAN_INT) // MODE_AP_LAN_INT -> MODE_AP
     {
+        conState.mode = MODE_AP;
+        return;
     }
-    else if (conState.mode == MODE_AP_LAN_INT && conState.goal_mode < MODE_AP_LAN_INT)//MODE_AP_LAN_INT -> MODE_AP
+    else if (conState.mode == MODE_AP && conState.goal_mode < MODE_AP) // MODE_AP -> MODE_OFF_AP_INT
     {
+
+        conState.mode = MODE_OFF_AP_INT;
+        return;
     }
-    else if (conState.mode == MODE_AP && conState.goal_mode < MODE_AP)//MODE_AP -> MODE_OFF_AP_INT
+    else if (conState.mode == MODE_OFF_AP_INT && conState.goal_mode < MODE_OFF_AP_INT) // MODE_OFF_AP_INT -> MODE_OFF
     {
-    }
-    else if (conState.mode == MODE_OFF_AP_INT && conState.goal_mode < MODE_OFF_AP_INT)//MODE_OFF_AP_INT -> MODE_OFF
-    {
+        http_server_deinit(&http_server);
+        dns_server_deinit(&dns_server);
         dhcp_server_deinit(&dhcp_server);
         cyw43_arch_lwip_begin();
         cyw43_arch_disable_ap_mode();
@@ -186,7 +223,7 @@ void check_and_update_mode()
     }
     else
     {
-        printf("Invalid mode.");
+        printf("Invalid mode pair. {%i -> %i}", conState.mode, conState.goal_mode);
         return;
     }
 
@@ -207,19 +244,15 @@ int main()
     // Get notified if the user presses a key
     stdio_set_chars_available_callback(key_pressed_func, NULL);
 
-    while (conState.goal_mode != MODE_OFF || conState.mode != MODE_OFF)
+    // while (conState.goal_mode != MODE_OFF || conState.mode != MODE_OFF)
+    while (true)
     {
         printf("Hearthbeat ♥ %i -> %i\n", conState.mode, conState.goal_mode);
         check_and_update_mode();
-        blink_led();
+        blink_led(conState.mode);
         sleep_ms(HEARTHBEAT_INTERVAL_MS);
     }
     cyw43_arch_deinit();
     printf("Shutting down...");
     return 0;
 }
-
-//     // Start the dns server
-//     dns_server_t dns_server;
-//     dns_server_init(&dns_server, &state->gw);
-//     dns_server_deinit(&dns_server);
