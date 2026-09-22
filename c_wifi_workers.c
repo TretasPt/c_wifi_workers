@@ -73,8 +73,8 @@ void check_and_update_mode()
 {
     if (conState.goal_mode == conState.mode)
     {
-        DEBUG_printf("Target mode achieved. Checking for failures...");
-        printf("TODO\n");
+        // DEBUG_printf("Target mode achieved. Checking for failures...");
+        // printf("TODO\n");
         return;
     }
 
@@ -247,7 +247,7 @@ int main()
     // while (conState.goal_mode != MODE_OFF || conState.mode != MODE_OFF)
     while (true)
     {
-        printf("Hearthbeat ♥ %i -> %i\n", conState.mode, conState.goal_mode);
+        // printf("Hearthbeat ♥ %i -> %i\n", conState.mode, conState.goal_mode);
         check_and_update_mode();
         blink_led(conState.mode);
         sleep_ms(HEARTHBEAT_INTERVAL_MS);

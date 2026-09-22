@@ -3,69 +3,142 @@
 #include "lwip/tcp.h"
 #include "pico/cyw43_arch.h"
 
+static const int MAX_RESPONSE_SIZE = 1024;
 static mode_change_cb_t global_mode_setter = NULL;
 static con_state_getter_t global_mode_getter = NULL;
 static ip_addr_t ap_addr;
+const char local_url[] = "tretaspt.pico";
+
+static void http_routing(char *response, int *len, char *method, char *target, struct pbuf *p)
+{
+    int firstLineEnd = pbuf_strstr(p, "\r\n");
+    int headersEnd = pbuf_strstr(p, "\r\n\r\n");
+    int hostStart = 0xFFFF;
+    int hostEnd = 0xFFFF;
+    char host[50];
+    host[0] = '\0';
+    if (firstLineEnd != 0xFFFF && headersEnd != 0xFFFF && headersEnd > firstLineEnd)
+    {
+        hostStart = pbuf_memfind(p, "\r\nHost: ", 8, firstLineEnd - 1);
+        if (hostStart != 0xFFFF)
+        {
+            hostStart += 8;
+            hostEnd = pbuf_memfind(p, "\r\n", 2, hostStart);
+            if (hostEnd != 0xFFFF && hostEnd - hostStart < 50)
+            {
+                pbuf_copy_partial(p, host, hostEnd - hostStart, hostStart);
+                host[hostEnd - hostStart] = '\0';
+            }
+        }
+    }
+
+    if (strcasecmp("GET", method) == 0)
+    {
+        if (strcasecmp(local_url, host) != 0)
+        {
+            *len = snprintf(response, MAX_RESPONSE_SIZE * sizeof(char),
+                            "HTTP/1.1 302 Found\r\n"
+                            "Location: http://%s/\r\n"
+                            "Connection: close\r\n"
+                            "Content-Length: 0\r\n"
+                            "\r\n",
+                            local_url);
+        }
+        else
+        {
+            const char *http_body =
+                "<!doctype html>\r\n"
+                "<html>\r\n"
+                "<body><h1>This is not the site you're looking for...</h1></body>\r\n"
+                "</html>\r\n";
+
+            const char *http_header =
+                "HTTP/1.1 200 Replaced\r\n"
+                "Connection: close\r\n"
+                "Content-Length: %d\r\n"
+                "\r\n";
+
+            *len = snprintf(response, MAX_RESPONSE_SIZE * sizeof(char),
+                            "HTTP/1.1 200 OK\r\n"
+                            "Content-Type: text/html\r\n"
+                            "Connection: close\r\n"
+                            "Content-Length: %d\r\n"
+                            "\r\n"
+                            "%s",
+                            (int)strlen(http_body), http_body);
+        }
+    }
+    // else if (strcasecmp("POST", method) == 0)
+    // {
+    // }
+    else
+    {
+        printf("Other method: \"%s\"", method);
+        // 501 Not implemented.
+        *len = snprintf(response, MAX_RESPONSE_SIZE * sizeof(char),
+                        "HTTP/1.1 501 Not Implemented\r\n"
+                        "\r\n");
+    }
+}
 
 static void http_response_handler(struct tcp_pcb *tpcb, struct pbuf *p)
 {
-    printf("http request recieved with length %d \nHTTP_START\n\n", p->tot_len);
-    struct pbuf *partial;
-    for (partial = p; partial != NULL; partial = partial->next)
-    {
-        for (uint16_t i = 0; i < partial->len; i++)
-        {
-            putchar(((char *)partial->payload)[i]);
-        }
-    }
-    printf("\n\nHTTP_END\n");
+    char response[MAX_RESPONSE_SIZE];
+    int response_len;
 
-    char response[256];
-    int len;
-    if (false)
+    // printf("\n\n\n\nhttp request recieved with length %d \nHTTP_START\n\n", p->tot_len);
+    // struct pbuf *partial;
+    // for (partial = p; partial != NULL; partial = partial->next)
+    // {
+    //     for (uint16_t i = 0; i < partial->len; i++)
+    //     {
+    //         putchar(((char *)partial->payload)[i]);
+    //     }
+    // }
+    // printf("\n\nHTTP_END\n");
+
+    int methodEnd = pbuf_strstr(p, " ");
+    int targetEnd = pbuf_memfind(p, " ", 1, methodEnd + 1);
+    char method[20];
+    char target[200];
+
+    if (methodEnd == 0xFFFF || methodEnd + 1 >= 20)
     {
-        // TODO: Address redirect loop...
-        len = snprintf(response, sizeof(response),
-                       "HTTP/1.1 302 Found\r\n"
-                       "Location: http://%" PRIu32 ".%" PRIu32 ".%" PRIu32 ".%" PRIu32 "/\r\n"
-                       "Connection: close\r\n"
-                       "Content-Length: 0\r\n"
-                       "\r\n",
-                       ip4_addr1_val(ap_addr), ip4_addr2_val(ap_addr), ip4_addr3_val(ap_addr), ip4_addr4_val(ap_addr));
+        goto onError;
     }
     else
     {
-        const char *http_body =
-            "<!doctype html>\r\n"
-            "<html>\r\n"
-            "<body><h1>This is not the site you're looking for...</h1></body>\r\n"
-            "</html>\r\n";
-
-        const char *http_header =
-            "HTTP/1.1 200 Replaced\r\n"
-            "Connection: close\r\n"
-            "Content-Length: %d\r\n"
-            "\r\n";
-
-        len = snprintf(response, sizeof(response),
-                           "HTTP/1.1 200 OK\r\n"
-                           "Content-Type: text/html\r\n"
-                           "Connection: close\r\n"
-                           "Content-Length: %d\r\n"
-                           "\r\n"
-                           "%s",
-                           (int)strlen(http_body), http_body);
+        pbuf_copy_partial(p, method, methodEnd, 0);
+        method[methodEnd] = '\0';
     }
 
-    if (tcp_write(tpcb, response, len, TCP_WRITE_FLAG_COPY) == ERR_OK)
+    if (targetEnd == 0xFFFF || targetEnd + 1 - methodEnd + 1 >= 200)
+    {
+        goto onError;
+    }
+    else
+    {
+        pbuf_copy_partial(p, target, targetEnd - methodEnd - 1, methodEnd + 1);
+        target[targetEnd - methodEnd - 1] = '\0';
+    }
+
+    // printf("Method = \"%s\"\nTarget = \"%s\"\n", method, target);
+
+    http_routing(response, &response_len, method, target, p);
+    // printf("Sending response:\n%s\n", response);
+    if (tcp_write(tpcb, response, response_len, TCP_WRITE_FLAG_COPY) == ERR_OK)
     {
         tcp_output(tpcb);
+        // printf("Output sent.\n");
     }
+    return;
+onError:
+    printf("Error handling http request.\n");
 }
 
 static err_t http_request_handler(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err)
 {
-    printf("http_recieve\n");
+    // printf("http_recieve\n");
     if (p == NULL) // Client closed connection
     {
         tcp_close(tpcb);
@@ -82,7 +155,7 @@ static err_t http_request_handler(void *arg, struct tcp_pcb *tpcb, struct pbuf *
 
 err_t http_accept_handler(void *arg, struct tcp_pcb *newpcb, err_t err)
 {
-    printf("http_accept\n");
+    // printf("http_accept\n");
     if (err != ERR_OK || newpcb == NULL)
     {
         return ERR_VAL;
