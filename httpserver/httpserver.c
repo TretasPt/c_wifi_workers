@@ -8,6 +8,20 @@ static mode_change_cb_t global_mode_setter = NULL;
 static con_state_getter_t global_mode_getter = NULL;
 static ip_addr_t ap_addr;
 const char local_url[] = "tretaspt.pico";
+const char *http_body =
+    "<!doctype html>\r\n"
+    "<html>\r\n"
+    "   <head>"
+    "       <style>"
+    "           html{height:100%;}"
+    "           body{height:100%;margin:0;background-color:cadetblue;color:white;display:flex;justify-content:center;align-items:center;}"
+    "       </style>"
+    "       <script></script>"
+    "   </head>"
+    "   <body>"
+    "       <h1>This is not the site you're looking for...</h1>"
+    "   </body>\r\n"
+    "</html>\r\n";
 
 static void http_routing(char *response, int *len, char *method, char *target, struct pbuf *p)
 {
@@ -34,7 +48,7 @@ static void http_routing(char *response, int *len, char *method, char *target, s
 
     if (strcasecmp("GET", method) == 0)
     {
-        if (strcasecmp(local_url, host) != 0)
+        if (strcasecmp(local_url, host) != 0) // Redirect needed?
         {
             *len = snprintf(response, MAX_RESPONSE_SIZE * sizeof(char),
                             "HTTP/1.1 302 Found\r\n"
@@ -46,11 +60,11 @@ static void http_routing(char *response, int *len, char *method, char *target, s
         }
         else
         {
-            const char *http_body =
-                "<!doctype html>\r\n"
-                "<html>\r\n"
-                "<body><h1>This is not the site you're looking for...</h1></body>\r\n"
-                "</html>\r\n";
+            // const char *http_body =
+            //     "<!doctype html>\r\n"
+            //     "<html>\r\n"
+            //     "<body><h1>This is not the site you're looking for...</h1></body>\r\n"
+            //     "</html>\r\n";
 
             const char *http_header =
                 "HTTP/1.1 200 Replaced\r\n"
@@ -73,10 +87,12 @@ static void http_routing(char *response, int *len, char *method, char *target, s
     // }
     else
     {
-        printf("Other method: \"%s\"", method);
+        printf("Other method: \"%s\".\n", method);
         // 501 Not implemented.
         *len = snprintf(response, MAX_RESPONSE_SIZE * sizeof(char),
                         "HTTP/1.1 501 Not Implemented\r\n"
+                        "Connection: close\r\n"
+                        "Content-Length: 0\r\n"
                         "\r\n");
     }
 }
